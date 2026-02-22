@@ -1,0 +1,5 @@
+{
+  "name": "Dots and Boxes",
+  "description": "A classic 2-player Dots and Boxes game where players take turns connecting dots to form squares.",
+  "requestFramePermissions": []
+}
