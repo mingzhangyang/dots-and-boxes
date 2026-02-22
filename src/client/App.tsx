@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { RefreshCw, Trophy, User, Bot, Sun, Moon, Volume2, VolumeX, Wifi, Copy, Check, Loader2 } from 'lucide-react';
-import { type Player, type GameState, createInitialState, applyMove } from './gameLogic';
+import { type Player, type GameState, createInitialState, applyMove } from '../shared/gameLogic';
 
 // ---------------------------------------------------------------------------
 // Sound engine

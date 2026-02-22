@@ -5,5 +5,5 @@
     "types": ["@cloudflare/workers-types"],
     "noEmit": true
   },
-  "include": ["src/worker.ts", "src/GameRoom.ts", "src/gameLogic.ts"]
+  "include": ["src/worker/index.ts", "src/worker/GameRoom.ts", "src/shared/gameLogic.ts"]
 }

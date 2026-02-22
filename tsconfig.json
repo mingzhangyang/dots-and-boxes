@@ -23,5 +23,5 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "exclude": ["src/worker.ts", "src/GameRoom.ts"]
+  "exclude": ["src/worker"]
 }

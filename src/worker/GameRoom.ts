@@ -1,5 +1,5 @@
-import { createInitialState, applyMove } from './gameLogic';
-import type { GameState } from './gameLogic';
+import { createInitialState, applyMove } from '../shared/gameLogic';
+import type { GameState } from '../shared/gameLogic';
 
 export interface Env {
   GAME_ROOM: DurableObjectNamespace;
