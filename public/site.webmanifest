@@ -1,12 +1,16 @@
 {
   "name": "Dots & Boxes",
   "short_name": "Dots",
+  "description": "Play Dots and Boxes online for free. Challenge an AI opponent or play real-time multiplayer with friends.",
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ],
   "start_url": "/",
   "display": "standalone",
+  "orientation": "any",
   "theme_color": "#111827",
-  "background_color": "#111827"
+  "background_color": "#111827",
+  "categories": ["games", "entertainment"],
+  "lang": "en-US"
 }
