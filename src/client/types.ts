@@ -11,4 +11,4 @@ export interface InteractionState {
 }
 
 export type GameMode = 'pvp' | 'pve' | 'remote';
-export type RemoteStatus = 'idle' | 'connecting' | 'waiting' | 'ready' | 'disconnected';
+export type RemoteStatus = 'idle' | 'connecting' | 'waiting' | 'ready' | 'disconnected' | 'reconnecting';

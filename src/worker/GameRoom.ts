@@ -10,9 +10,15 @@ type ServerMessage =
   | { type: 'joined'; playerIndex: 1 | 2; gameState: GameState; ready: boolean }
   | { type: 'opponent_joined'; gameState: GameState }
   | { type: 'state'; gameState: GameState }
-  | { type: 'opponent_disconnected' }
+  | { type: 'opponent_disconnected'; gameState: GameState }
   | { type: 'full' }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | { type: 'ping' };
+
+// Interval between server-sent ping frames
+const HEARTBEAT_INTERVAL_MS = 30_000;
+// Close a socket if it hasn't responded to pings within this window
+const STALE_THRESHOLD_MS = 90_000;
 
 /**
  * Durable Object that manages one game room.
@@ -44,7 +50,14 @@ export class GameRoom {
     } else if (p2.length === 0) {
       playerIndex = 2;
     } else {
-      return new Response('Room is full', { status: 409 });
+      // Room is full — accept the WebSocket, deliver the 'full' message, then close.
+      // Using server.accept() (non-hibernatable) so this ephemeral socket isn't
+      // tracked by the DO's hibernatable-WebSocket system.
+      const { 0: client, 1: server } = new WebSocketPair();
+      server.accept();
+      server.send(JSON.stringify({ type: 'full' } satisfies ServerMessage));
+      server.close(1008, 'Room is full');
+      return new Response(null, { status: 101, webSocket: client });
     }
 
     // Restore persisted game state if the DO was evicted and restarted
@@ -54,21 +67,32 @@ export class GameRoom {
     const { 0: client, 1: server } = new WebSocketPair();
     this.state.acceptWebSocket(server, [`player${playerIndex}`]);
 
-    const ready = playerIndex === 2 && p1.length === 1;
+    // Initialise per-socket heartbeat tracking
+    server.serializeAttachment({ lastPong: Date.now() });
 
-    const joinMsg: ServerMessage = {
+    // The other player's live sockets (used for ready detection and notifications)
+    const otherSockets = playerIndex === 1 ? p2 : p1;
+    const ready = otherSockets.length > 0;
+
+    server.send(JSON.stringify({
       type: 'joined',
       playerIndex,
       gameState: this.gameState,
       ready,
-    };
-    server.send(JSON.stringify(joinMsg));
+    } satisfies ServerMessage));
 
+    // Notify whichever player was already waiting that their opponent has arrived
     if (ready) {
-      // Notify the waiting player 1 that their opponent has arrived
-      for (const ws of this.state.getWebSockets('player1')) {
-        const msg: ServerMessage = { type: 'opponent_joined', gameState: this.gameState };
-        ws.send(JSON.stringify(msg));
+      for (const ws of otherSockets) {
+        ws.send(JSON.stringify({ type: 'opponent_joined', gameState: this.gameState } satisfies ServerMessage));
+      }
+    }
+
+    // Start the heartbeat alarm the first time a player connects to this room
+    if (playerIndex === 1) {
+      const existingAlarm = await this.state.storage.getAlarm();
+      if (!existingAlarm) {
+        await this.state.storage.setAlarm(Date.now() + HEARTBEAT_INTERVAL_MS);
       }
     }
 
@@ -83,23 +107,41 @@ export class GameRoom {
       return;
     }
 
+    // Keep the connection alive — update the last-pong timestamp
+    if (data.type === 'pong') {
+      ws.serializeAttachment({ lastPong: Date.now() });
+      return;
+    }
+
     if (data.type === 'move') {
       // Both players must be connected before moves are accepted
-      if (this.state.getWebSockets('player1').length === 0) return;
-      if (this.state.getWebSockets('player2').length === 0) return;
+      if (this.state.getWebSockets('player1').length === 0 || this.state.getWebSockets('player2').length === 0) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Waiting for opponent.' } satisfies ServerMessage));
+        return;
+      }
 
       const tags = this.state.getTags(ws);
       const playerIndex: 1 | 2 = tags.includes('player1') ? 1 : 2;
 
-      // Restore state in case DO was evicted mid-game
+      // Restore state in case the DO was evicted mid-game
       const saved = await this.state.storage.get<GameState>('gameState');
       if (saved) this.gameState = saved;
 
-      if (playerIndex !== this.gameState.currentPlayer) return;
-      if (data.r === undefined || data.c === undefined || data.isH === undefined) return;
+      if (playerIndex !== this.gameState.currentPlayer) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Not your turn.' } satisfies ServerMessage));
+        return;
+      }
+
+      if (data.r === undefined || data.c === undefined || data.isH === undefined) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Invalid move data.' } satisfies ServerMessage));
+        return;
+      }
 
       const newState = applyMove(this.gameState, data.r, data.c, data.isH);
-      if (!newState) return;
+      if (!newState) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Invalid move.' } satisfies ServerMessage));
+        return;
+      }
 
       this.gameState = newState;
       await this.state.storage.put('gameState', newState);
@@ -108,12 +150,52 @@ export class GameRoom {
     }
   }
 
-  async webSocketClose(_ws: WebSocket): Promise<void> {
-    this.broadcastExcept(_ws, { type: 'opponent_disconnected' });
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    // Load the latest game state so the opponent gets an accurate snapshot
+    const saved = await this.state.storage.get<GameState>('gameState');
+    if (saved) this.gameState = saved;
+
+    this.broadcastExcept(ws, { type: 'opponent_disconnected', gameState: this.gameState });
   }
 
-  async webSocketError(_ws: WebSocket, _error: unknown): Promise<void> {
-    this.broadcastExcept(_ws, { type: 'opponent_disconnected' });
+  async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
+    const saved = await this.state.storage.get<GameState>('gameState');
+    if (saved) this.gameState = saved;
+
+    this.broadcastExcept(ws, { type: 'opponent_disconnected', gameState: this.gameState });
+  }
+
+  /**
+   * Alarm handler — fires every HEARTBEAT_INTERVAL_MS while players are connected.
+   *
+   * • Pings every live socket so the client knows the connection is healthy.
+   * • Closes sockets that haven't responded within STALE_THRESHOLD_MS.
+   * • When no sockets remain, cleans up persisted storage and lets the alarm lapse.
+   */
+  async alarm(): Promise<void> {
+    const allSockets = this.state.getWebSockets();
+
+    if (allSockets.length === 0) {
+      // Nobody connected — purge state and stop rescheduling
+      await this.state.storage.deleteAll();
+      return;
+    }
+
+    const now = Date.now();
+    for (const ws of allSockets) {
+      const attachment = ws.deserializeAttachment() as { lastPong?: number } | null;
+      const lastPong = attachment?.lastPong ?? now;
+
+      if (now - lastPong > STALE_THRESHOLD_MS) {
+        // Stale connection — close it so the opponent gets notified
+        try { ws.close(1001, 'Connection timed out'); } catch { /* already closed */ }
+      } else {
+        try { ws.send(JSON.stringify({ type: 'ping' } satisfies ServerMessage)); } catch { /* ignore */ }
+      }
+    }
+
+    // Schedule the next heartbeat
+    await this.state.storage.setAlarm(Date.now() + HEARTBEAT_INTERVAL_MS);
   }
 
   private broadcast(message: ServerMessage): void {

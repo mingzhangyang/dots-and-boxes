@@ -394,6 +394,7 @@ export default function App() {
 
   const remoteStatusLabel = () => {
     if (remoteStatus === 'connecting') return 'Connecting…';
+    if (remoteStatus === 'reconnecting') return 'Reconnecting…';
     if (remoteStatus === 'waiting') return 'Waiting for opponent…';
     if (remoteStatus === 'disconnected') return 'Opponent disconnected';
     if (remoteStatus === 'ready') {

@@ -61,6 +61,17 @@ export function OnlineLobby({
     );
   }
 
+  if (remoteStatus === 'reconnecting') {
+    return (
+      <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/95 dark:bg-slate-950/95 backdrop-blur-md rounded-2xl sm:rounded-[2rem]">
+        <div className="flex flex-col items-center gap-6 p-6 sm:p-10 w-full max-w-xs text-center">
+          <Loader2 className="w-10 h-10 text-amber-500 animate-spin" />
+          <p className="text-slate-700 dark:text-slate-300 font-medium">Reconnecting…</p>
+        </div>
+      </div>
+    );
+  }
+
   if (remoteStatus === 'connecting' || remoteStatus === 'waiting') {
     return (
       <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/95 dark:bg-slate-950/95 backdrop-blur-md rounded-2xl sm:rounded-[2rem]">

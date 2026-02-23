@@ -8,6 +8,9 @@ interface UseRemoteMultiplayerOptions {
   updateGameState: (state: GameState) => void;
 }
 
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAY_MS = 2000;
+
 export function useRemoteMultiplayer({ gameStateRef, updateGameState }: UseRemoteMultiplayerOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const [remoteRoomId, setRemoteRoomId] = useState<string | null>(null);
@@ -17,24 +20,65 @@ export function useRemoteMultiplayer({ gameStateRef, updateGameState }: UseRemot
   const [joinError, setJoinError] = useState('');
   const [copied, setCopied] = useState(false);
 
+  // Refs used inside async event callbacks to avoid stale closure issues
+  const statusRef = useRef<RemoteStatus>('idle');
+  const currentRoomIdRef = useRef<string | null>(null);
+  // Monotonically increasing ID — incremented on each new WebSocket creation.
+  // Each socket's callbacks capture their own ID; if wsIdRef.current no longer
+  // matches, the callback belongs to a superseded connection and is ignored.
+  const wsIdRef = useRef(0);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const setStatus = useCallback((status: RemoteStatus) => {
+    statusRef.current = status;
+    setRemoteStatus(status);
+  }, []);
+
   const connectToRoom = useCallback((roomId: string) => {
-    if (wsRef.current) wsRef.current.close();
+    // Cancel any pending reconnect timer
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
+    // Close any existing socket — increment wsIdRef first so its onclose is ignored
+    wsIdRef.current += 1;
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    currentRoomIdRef.current = roomId;
+    const myId = wsIdRef.current;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/api/room/${roomId}/ws`);
     wsRef.current = ws;
-    setRemoteStatus('connecting');
+    setStatus('connecting');
+
+    ws.onopen = () => {
+      if (wsIdRef.current !== myId) return;
+      reconnectAttemptsRef.current = 0;
+    };
 
     ws.onmessage = (event) => {
+      if (wsIdRef.current !== myId) return;
       const msg = JSON.parse(event.data as string);
+
+      if (msg.type === 'ping') {
+        // Respond immediately so the server keeps the connection alive
+        ws.send(JSON.stringify({ type: 'pong' }));
+        return;
+      }
 
       if (msg.type === 'joined') {
         setRemoteRoomId(roomId);
         setRemotePlayerIndex(msg.playerIndex);
         updateGameState(msg.gameState);
-        setRemoteStatus(msg.ready ? 'ready' : 'waiting');
+        setStatus(msg.ready ? 'ready' : 'waiting');
       } else if (msg.type === 'opponent_joined') {
-        setRemoteStatus('ready');
+        setStatus('ready');
         updateGameState(msg.gameState);
       } else if (msg.type === 'state') {
         const prev = gameStateRef.current;
@@ -48,22 +92,56 @@ export function useRemoteMultiplayer({ gameStateRef, updateGameState }: UseRemot
         }
         updateGameState(next);
       } else if (msg.type === 'opponent_disconnected') {
-        setRemoteStatus('disconnected');
+        // Sync to the server's authoritative state snapshot
+        if (msg.gameState) updateGameState(msg.gameState);
+        setStatus('disconnected');
       } else if (msg.type === 'full') {
         setJoinError('This room is full. Try a different code.');
-        setRemoteStatus('idle');
+        setStatus('idle');
+        reconnectAttemptsRef.current = 0;
+      } else if (msg.type === 'error') {
+        // Server-side validation errors (not-your-turn, invalid-move, etc.)
+        // These are informational only — status does not change
+        console.warn('[remote] server error:', msg.message);
       }
     };
 
     ws.onclose = () => {
-      setRemoteStatus(prev => prev === 'idle' || prev === 'connecting' ? 'idle' : 'disconnected');
+      if (wsIdRef.current !== myId) return;
+
+      const currentStatus = statusRef.current;
+
+      // If a message handler already moved us to 'idle' (e.g. 'full'), don't override
+      if (currentStatus === 'idle') return;
+
+      // Attempt transparent reconnection for unexpected drops
+      if (
+        reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS &&
+        currentStatus !== 'disconnected' &&
+        currentRoomIdRef.current
+      ) {
+        reconnectAttemptsRef.current += 1;
+        setStatus('reconnecting');
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
+          if (currentRoomIdRef.current) connectToRoom(currentRoomIdRef.current);
+        }, RECONNECT_DELAY_MS);
+      } else {
+        setStatus('disconnected');
+      }
     };
 
     ws.onerror = () => {
-      setJoinError('Could not connect. Check the room code and try again.');
-      setRemoteStatus('idle');
+      if (wsIdRef.current !== myId) return;
+      // Only handle errors on the initial connect attempt, not during reconnection.
+      // Reconnection errors are handled by onclose (which follows onerror).
+      if (statusRef.current === 'connecting') {
+        setJoinError('Could not connect. Check the room code and try again.');
+        setStatus('idle');
+        reconnectAttemptsRef.current = 0;
+      }
     };
-  }, [updateGameState, gameStateRef]);
+  }, [updateGameState, gameStateRef, setStatus]);
 
   const createRoom = useCallback(async () => {
     setJoinError('');
@@ -96,16 +174,25 @@ export function useRemoteMultiplayer({ gameStateRef, updateGameState }: UseRemot
   }, [remoteRoomId]);
 
   const resetRemote = useCallback(() => {
+    // Cancel pending reconnect timer
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    // Invalidate current connection so any in-flight events are ignored
+    wsIdRef.current += 1;
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
+    reconnectAttemptsRef.current = 0;
+    currentRoomIdRef.current = null;
     setRemoteRoomId(null);
     setRemotePlayerIndex(null);
-    setRemoteStatus('idle');
+    setStatus('idle');
     setJoinInput('');
     setJoinError('');
-  }, []);
+  }, [setStatus]);
 
   return {
     wsRef,
