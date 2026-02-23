@@ -1,197 +1,14 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { RefreshCw, Trophy, User, Bot, Sun, Moon, Volume2, VolumeX, Wifi, Copy, Check, Loader2 } from 'lucide-react';
+import { RefreshCw, User, Bot, Sun, Moon, Volume2, VolumeX, Wifi } from 'lucide-react';
 import { type Player, type GameState, createInitialState, applyMove } from '../shared/gameLogic';
-
-// ---------------------------------------------------------------------------
-// Sound engine
-// ---------------------------------------------------------------------------
-
-class SoundEngine {
-  private ctx: AudioContext | null = null;
-  public enabled: boolean = true;
-
-  init() {
-    if (!this.ctx) {
-      this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    }
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume();
-    }
-  }
-
-  toggle() {
-    this.enabled = !this.enabled;
-    return this.enabled;
-  }
-
-  playLineSound() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(440, this.ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(880, this.ctx.currentTime + 0.1);
-    gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.1);
-    osc.connect(gain);
-    gain.connect(this.ctx.destination);
-    osc.start();
-    osc.stop(this.ctx.currentTime + 0.1);
-  }
-
-  playBoxSound() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(330, this.ctx.currentTime);
-    osc.frequency.setValueAtTime(440, this.ctx.currentTime + 0.1);
-    gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.2);
-    osc.connect(gain);
-    gain.connect(this.ctx.destination);
-    osc.start();
-    osc.stop(this.ctx.currentTime + 0.2);
-  }
-
-  playWinSound() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
-    const notes = [523.25, 659.25, 783.99, 1046.50];
-    notes.forEach((freq, i) => {
-      const osc = this.ctx!.createOscillator();
-      const gain = this.ctx!.createGain();
-      osc.type = 'triangle';
-      osc.frequency.value = freq;
-      const startTime = this.ctx!.currentTime + i * 0.15;
-      gain.gain.setValueAtTime(0, startTime);
-      gain.gain.linearRampToValueAtTime(0.2, startTime + 0.05);
-      gain.gain.linearRampToValueAtTime(0, startTime + 0.3);
-      osc.connect(gain);
-      gain.connect(this.ctx!.destination);
-      osc.start(startTime);
-      osc.stop(startTime + 0.3);
-    });
-  }
-}
-
-const soundEngine = new SoundEngine();
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface Dot {
-  r: number;
-  c: number;
-}
-
-interface InteractionState {
-  hoveredDot: Dot | null;
-  selectedDot: Dot | null;
-  dragStart: Dot | null;
-  mousePos: { x: number; y: number } | null;
-}
-
-type GameMode = 'pvp' | 'pve' | 'remote';
-type RemoteStatus = 'idle' | 'connecting' | 'waiting' | 'ready' | 'disconnected';
-
-// ---------------------------------------------------------------------------
-// Render constants
-// ---------------------------------------------------------------------------
-
-const DOT_RADIUS = 6;
-const HIT_RADIUS = 40;
-const LINE_WIDTH = 6;
-
-const getColors = (isDark: boolean) => ({
-  p1: '#f43f5e',
-  p2: '#0ea5e9',
-  p1Bg: isDark ? 'rgba(244, 63, 94, 0.25)' : 'rgba(244, 63, 94, 0.15)',
-  p2Bg: isDark ? 'rgba(14, 165, 233, 0.25)' : 'rgba(14, 165, 233, 0.15)',
-  dot: isDark ? '#334155' : '#cbd5e1',
-  dotHover: isDark ? '#64748b' : '#94a3b8',
-  boardBg: isDark ? '#0f172a' : '#ffffff',
-});
-
-// ---------------------------------------------------------------------------
-// AI
-// ---------------------------------------------------------------------------
-
-const getBestMove = (state: GameState) => {
-  const availableMoves: { r: number; c: number; isH: boolean }[] = [];
-  const completingMoves: { r: number; c: number; isH: boolean }[] = [];
-  const safeMoves: { r: number; c: number; isH: boolean }[] = [];
-
-  const countLines = (r: number, c: number) => {
-    let count = 0;
-    if (state.hLines[r][c]) count++;
-    if (state.hLines[r + 1][c]) count++;
-    if (state.vLines[r][c]) count++;
-    if (state.vLines[r][c + 1]) count++;
-    return count;
-  };
-
-  for (let r = 0; r < state.rows; r++) {
-    for (let c = 0; c < state.cols - 1; c++) {
-      if (!state.hLines[r][c]) {
-        const move = { r, c, isH: true };
-        availableMoves.push(move);
-        let completes = false;
-        let givesAway = false;
-        if (r > 0) {
-          const lines = countLines(r - 1, c);
-          if (lines === 3) completes = true;
-          if (lines === 2) givesAway = true;
-        }
-        if (r < state.rows - 1) {
-          const lines = countLines(r, c);
-          if (lines === 3) completes = true;
-          if (lines === 2) givesAway = true;
-        }
-        if (completes) completingMoves.push(move);
-        else if (!givesAway) safeMoves.push(move);
-      }
-    }
-  }
-
-  for (let r = 0; r < state.rows - 1; r++) {
-    for (let c = 0; c < state.cols; c++) {
-      if (!state.vLines[r][c]) {
-        const move = { r, c, isH: false };
-        availableMoves.push(move);
-        let completes = false;
-        let givesAway = false;
-        if (c > 0) {
-          const lines = countLines(r, c - 1);
-          if (lines === 3) completes = true;
-          if (lines === 2) givesAway = true;
-        }
-        if (c < state.cols - 1) {
-          const lines = countLines(r, c);
-          if (lines === 3) completes = true;
-          if (lines === 2) givesAway = true;
-        }
-        if (completes) completingMoves.push(move);
-        else if (!givesAway) safeMoves.push(move);
-      }
-    }
-  }
-
-  if (completingMoves.length > 0) return completingMoves[Math.floor(Math.random() * completingMoves.length)];
-  if (safeMoves.length > 0) return safeMoves[Math.floor(Math.random() * safeMoves.length)];
-  if (availableMoves.length > 0) return availableMoves[Math.floor(Math.random() * availableMoves.length)];
-  return null;
-};
-
-// ---------------------------------------------------------------------------
-// App component
-// ---------------------------------------------------------------------------
+import { soundEngine } from './soundEngine';
+import { type GameMode, type InteractionState } from './types';
+import { DOT_RADIUS, HIT_RADIUS, LINE_WIDTH, getColors } from './constants';
+import { getBestMove } from './ai';
+import { useRemoteMultiplayer } from './hooks/useRemoteMultiplayer';
+import { ScoreCards } from './components/ScoreCards';
+import { WinOverlay } from './components/WinOverlay';
+import { OnlineLobby } from './components/OnlineLobby';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -217,15 +34,6 @@ export default function App() {
     winner: 0 as Player | 0 | 'draw',
     moveCount: 0,
   });
-
-  // Remote (online) multiplayer state
-  const wsRef = useRef<WebSocket | null>(null);
-  const [remoteRoomId, setRemoteRoomId] = useState<string | null>(null);
-  const [remotePlayerIndex, setRemotePlayerIndex] = useState<1 | 2 | null>(null);
-  const [remoteStatus, setRemoteStatus] = useState<RemoteStatus>('idle');
-  const [joinInput, setJoinInput] = useState('');
-  const [joinError, setJoinError] = useState('');
-  const [copied, setCopied] = useState(false);
 
   // ---------------------------------------------------------------------------
   // Canvas drawing
@@ -364,112 +172,41 @@ export default function App() {
   }, [updateGameState]);
 
   // ---------------------------------------------------------------------------
+  // Remote (WebSocket) multiplayer
+  // ---------------------------------------------------------------------------
+
+  const {
+    wsRef,
+    remoteRoomId,
+    remotePlayerIndex,
+    remoteStatus,
+    joinInput,
+    joinError,
+    copied,
+    createRoom,
+    joinRoom,
+    copyRoomCode,
+    resetRemote,
+    setJoinInput,
+    setJoinError,
+  } = useRemoteMultiplayer({ gameStateRef, updateGameState });
+
+  // ---------------------------------------------------------------------------
   // Mode switching
   // ---------------------------------------------------------------------------
 
   const switchMode = useCallback((newMode: GameMode) => {
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    setRemoteRoomId(null);
-    setRemotePlayerIndex(null);
-    setRemoteStatus('idle');
-    setJoinInput('');
-    setJoinError('');
+    resetRemote();
     setGameMode(newMode);
     interactionRef.current = { hoveredDot: null, selectedDot: null, dragStart: null, mousePos: null };
     updateGameState(createInitialState());
-  }, [updateGameState]);
-
-  // ---------------------------------------------------------------------------
-  // Remote (WebSocket) multiplayer
-  // ---------------------------------------------------------------------------
-
-  const connectToRoom = useCallback((roomId: string) => {
-    if (wsRef.current) wsRef.current.close();
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/api/room/${roomId}/ws`);
-    wsRef.current = ws;
-    setRemoteStatus('connecting');
-
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data as string);
-
-      if (msg.type === 'joined') {
-        setRemoteRoomId(roomId);
-        setRemotePlayerIndex(msg.playerIndex);
-        updateGameState(msg.gameState);
-        setRemoteStatus(msg.ready ? 'ready' : 'waiting');
-      } else if (msg.type === 'opponent_joined') {
-        setRemoteStatus('ready');
-        updateGameState(msg.gameState);
-      } else if (msg.type === 'state') {
-        // Determine which sounds to play by comparing with current state
-        const prev = gameStateRef.current;
-        const next: GameState = msg.gameState;
-        if (next.winner) {
-          soundEngine.playWinSound();
-        } else if (next.scores[1] + next.scores[2] > prev.scores[1] + prev.scores[2]) {
-          soundEngine.playBoxSound();
-        } else {
-          soundEngine.playLineSound();
-        }
-        updateGameState(next);
-      } else if (msg.type === 'opponent_disconnected') {
-        setRemoteStatus('disconnected');
-      } else if (msg.type === 'full') {
-        setJoinError('This room is full. Try a different code.');
-        setRemoteStatus('idle');
-      }
-    };
-
-    ws.onclose = () => {
-      setRemoteStatus(prev => prev === 'idle' || prev === 'connecting' ? 'idle' : 'disconnected');
-    };
-
-    ws.onerror = () => {
-      setJoinError('Could not connect. Check the room code and try again.');
-      setRemoteStatus('idle');
-    };
-  }, [updateGameState]);
-
-  const createRoom = useCallback(async () => {
-    setJoinError('');
-    try {
-      const res = await fetch('/api/room', { method: 'POST' });
-      if (!res.ok) throw new Error('Failed to create room');
-      const { roomId } = await res.json() as { roomId: string };
-      connectToRoom(roomId);
-    } catch {
-      setJoinError('Could not create room. Please try again.');
-    }
-  }, [connectToRoom]);
-
-  const joinRoom = useCallback(() => {
-    const code = joinInput.trim().toUpperCase();
-    if (code.length < 4) {
-      setJoinError('Enter the room code shared by your opponent.');
-      return;
-    }
-    setJoinError('');
-    connectToRoom(code);
-  }, [joinInput, connectToRoom]);
-
-  const copyRoomCode = useCallback(() => {
-    if (!remoteRoomId) return;
-    navigator.clipboard.writeText(remoteRoomId).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }, [remoteRoomId]);
+  }, [resetRemote, updateGameState]);
 
   // ---------------------------------------------------------------------------
   // Local move handling
   // ---------------------------------------------------------------------------
 
-  const attemptMove = useCallback((dot1: Dot, dot2: Dot) => {
+  const attemptMove = useCallback((dot1: { r: number; c: number }, dot2: { r: number; c: number }) => {
     const state = gameStateRef.current;
     if (state.winner) return;
 
@@ -489,12 +226,10 @@ export default function App() {
     }
 
     if (gameMode === 'remote') {
-      // Send move to server; wait for state broadcast
       wsRef.current?.send(JSON.stringify({ type: 'move', r, c, isH }));
       return;
     }
 
-    // Local mode: apply immediately
     const newState = applyMove(state, r, c, isH);
     if (!newState) return;
 
@@ -507,7 +242,7 @@ export default function App() {
     }
 
     updateGameState(newState);
-  }, [gameMode, updateGameState]);
+  }, [gameMode, wsRef, updateGameState]);
 
   // ---------------------------------------------------------------------------
   // AI turn
@@ -560,7 +295,7 @@ export default function App() {
     return { x: clientX - rect.left, y: clientY - rect.top };
   };
 
-  const getClosestDot = (x: number, y: number): Dot | null => {
+  const getClosestDot = (x: number, y: number) => {
     const state = gameStateRef.current;
     const canvas = canvasRef.current;
     if (!canvas) return null;
@@ -652,7 +387,7 @@ export default function App() {
   };
 
   // ---------------------------------------------------------------------------
-  // Render helpers
+  // Render
   // ---------------------------------------------------------------------------
 
   const isDark = theme === 'dark';
@@ -666,10 +401,6 @@ export default function App() {
     }
     return '';
   };
-
-  // ---------------------------------------------------------------------------
-  // JSX
-  // ---------------------------------------------------------------------------
 
   return (
     <div className={`min-h-[100dvh] flex flex-col items-center justify-start sm:justify-center p-2 sm:p-4 md:p-8 font-sans transition-colors duration-500 relative overflow-hidden ${isDark ? 'dark bg-slate-950 text-slate-200' : 'bg-slate-50 text-slate-900'}`}>
@@ -719,128 +450,32 @@ export default function App() {
             </div>
           </div>
 
-          {/* Score cards */}
-          <div className="grid grid-cols-2 gap-3 sm:gap-4 md:gap-6">
-            {([1, 2] as Player[]).map(p => {
-              const isActive = uiState.currentPlayer === p && !uiState.winner;
-              const isMe = gameMode === 'remote' && remotePlayerIndex === p;
-              const label = gameMode === 'pve' && p === 2 ? 'Computer'
-                : gameMode === 'remote' ? (isMe ? 'You' : 'Opponent')
-                : `Player ${p}`;
-              const color = p === 1
-                ? 'rose' : 'sky';
-              return (
-                <div key={p} className={`relative overflow-hidden rounded-xl sm:rounded-2xl p-4 sm:p-6 border-2 transition-all duration-500 ${isActive
-                  ? `border-${color}-400/50 dark:border-${color}-500/50 bg-${color}-50 dark:bg-${color}-500/10 shadow-[0_4px_20px_rgb(${p === 1 ? '244,63,94' : '14,165,233'},0.12)] dark:shadow-[0_4px_20px_rgb(${p === 1 ? '244,63,94' : '14,165,233'},0.2)] transform sm:-translate-y-1`
-                  : 'border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/60 backdrop-blur-md opacity-80'}`}>
-                  <div className="flex justify-between items-center">
-                    <span className={`font-bold uppercase tracking-wider text-xs sm:text-sm ${isActive ? `text-${color}-600 dark:text-${color}-400` : 'text-slate-500 dark:text-slate-400'}`}>
-                      {label}
-                    </span>
-                    {uiState.winner === p && <Trophy className={`text-${color}-500 dark:text-${color}-400 animate-bounce w-5 h-5 sm:w-6 sm:h-6`} />}
-                  </div>
-                  <div className={`text-4xl sm:text-5xl md:text-6xl font-light mt-2 sm:mt-3 tracking-tight ${isActive ? `text-${color}-600 dark:text-white` : 'text-slate-400 dark:text-slate-500'}`}>
-                    {uiState.scores[p]}
-                  </div>
-                  {isActive && <div className={`absolute bottom-0 left-0 w-full h-1 sm:h-1.5 bg-gradient-to-r from-${color}-400 to-${color}-500 animate-pulse`} />}
-                </div>
-              );
-            })}
-          </div>
+          <ScoreCards uiState={uiState} gameMode={gameMode} remotePlayerIndex={remotePlayerIndex} />
         </div>
 
         {/* Board / Lobby area */}
         <div className="relative w-full aspect-square max-w-[600px] mx-auto group flex-grow sm:flex-grow-0 flex items-center justify-center min-h-0">
 
-          {/* Win overlay */}
-          {uiState.winner !== 0 && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/90 dark:bg-slate-950/90 backdrop-blur-md rounded-2xl sm:rounded-[2rem] animate-in fade-in zoom-in-95 duration-500">
-              <div className="text-center flex flex-col items-center gap-4 sm:gap-6 p-6 sm:p-8">
-                <div className={`p-4 sm:p-6 rounded-full ${uiState.winner === 1 ? 'bg-rose-100 dark:bg-rose-500/20' : uiState.winner === 2 ? 'bg-sky-100 dark:bg-sky-500/20' : 'bg-slate-100 dark:bg-slate-800'}`}>
-                  <Trophy className={`w-12 h-12 sm:w-20 sm:h-20 ${uiState.winner === 1 ? 'text-rose-500' : uiState.winner === 2 ? 'text-sky-500' : 'text-slate-400'}`} />
-                </div>
-                <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold text-slate-900 dark:text-white tracking-tight">
-                  {uiState.winner === 'draw' ? "It's a Draw!"
-                    : gameMode === 'remote'
-                      ? (uiState.winner === remotePlayerIndex ? 'You Win!' : 'You Lose!')
-                      : `Player ${uiState.winner} Wins!`}
-                </h2>
-                <button onClick={resetGame}
-                  className="mt-2 sm:mt-4 px-8 sm:px-10 py-3 sm:py-4 rounded-full bg-slate-900 dark:bg-white text-white dark:text-slate-950 font-bold text-base sm:text-lg hover:bg-slate-800 dark:hover:bg-slate-200 transition-all hover:scale-105 active:scale-95 shadow-lg">
-                  Play Again
-                </button>
-              </div>
-            </div>
-          )}
+          <WinOverlay
+            winner={uiState.winner}
+            gameMode={gameMode}
+            remotePlayerIndex={remotePlayerIndex}
+            onReset={resetGame}
+          />
 
-          {/* Online lobby overlay */}
-          {gameMode === 'remote' && remoteStatus === 'idle' && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/95 dark:bg-slate-950/95 backdrop-blur-md rounded-2xl sm:rounded-[2rem]">
-              <div className="flex flex-col items-center gap-6 p-6 sm:p-10 w-full max-w-xs">
-                <Wifi className="w-10 h-10 text-sky-500" />
-                <h2 className="text-xl font-bold text-slate-900 dark:text-white">Play Online</h2>
-
-                <button onClick={createRoom}
-                  className="w-full py-3 rounded-xl bg-sky-500 hover:bg-sky-400 text-white font-semibold text-sm transition-all hover:scale-105 active:scale-95 shadow-md">
-                  Create Room
-                </button>
-
-                <div className="w-full flex flex-col gap-2">
-                  <div className="flex gap-2">
-                    <input
-                      value={joinInput}
-                      onChange={e => { setJoinInput(e.target.value.toUpperCase()); setJoinError(''); }}
-                      onKeyDown={e => e.key === 'Enter' && joinRoom()}
-                      placeholder="Room code"
-                      maxLength={12}
-                      className="flex-1 px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm font-mono tracking-widest placeholder:font-sans placeholder:tracking-normal focus:outline-none focus:ring-2 focus:ring-sky-500"
-                    />
-                    <button onClick={joinRoom}
-                      className="px-4 py-2.5 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold text-sm hover:bg-slate-700 dark:hover:bg-slate-200 transition-all active:scale-95">
-                      Join
-                    </button>
-                  </div>
-                  {joinError && <p className="text-xs text-rose-500">{joinError}</p>}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Connecting / waiting overlay */}
-          {gameMode === 'remote' && (remoteStatus === 'connecting' || remoteStatus === 'waiting') && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/95 dark:bg-slate-950/95 backdrop-blur-md rounded-2xl sm:rounded-[2rem]">
-              <div className="flex flex-col items-center gap-6 p-6 sm:p-10 w-full max-w-xs text-center">
-                <Loader2 className="w-10 h-10 text-sky-500 animate-spin" />
-                <p className="text-slate-700 dark:text-slate-300 font-medium">
-                  {remoteStatus === 'connecting' ? 'Connecting…' : 'Waiting for opponent…'}
-                </p>
-                {remoteStatus === 'waiting' && remoteRoomId && (
-                  <div className="flex flex-col items-center gap-3 w-full">
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Share this code with your opponent:</p>
-                    <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 rounded-xl px-4 py-3 w-full justify-between">
-                      <span className="font-mono text-xl font-bold tracking-widest text-slate-900 dark:text-white">{remoteRoomId}</span>
-                      <button onClick={copyRoomCode} className="text-slate-400 hover:text-sky-500 transition-colors">
-                        {copied ? <Check size={18} className="text-green-500" /> : <Copy size={18} />}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Opponent disconnected overlay */}
-          {gameMode === 'remote' && remoteStatus === 'disconnected' && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/95 dark:bg-slate-950/95 backdrop-blur-md rounded-2xl sm:rounded-[2rem]">
-              <div className="flex flex-col items-center gap-6 p-6 sm:p-10 text-center">
-                <Wifi className="w-10 h-10 text-rose-500" />
-                <p className="text-slate-900 dark:text-white font-semibold text-lg">Opponent disconnected</p>
-                <button onClick={() => switchMode('remote')}
-                  className="px-8 py-3 rounded-full bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-bold text-sm hover:bg-slate-700 dark:hover:bg-slate-200 transition-all active:scale-95">
-                  Back to Lobby
-                </button>
-              </div>
-            </div>
+          {gameMode === 'remote' && (
+            <OnlineLobby
+              remoteStatus={remoteStatus}
+              remoteRoomId={remoteRoomId}
+              joinInput={joinInput}
+              joinError={joinError}
+              copied={copied}
+              onCreateRoom={createRoom}
+              onJoinRoom={joinRoom}
+              onJoinInputChange={v => { setJoinInput(v); setJoinError(''); }}
+              onCopyRoomCode={copyRoomCode}
+              onBackToLobby={() => switchMode('remote')}
+            />
           )}
 
           {/* Game board */}
