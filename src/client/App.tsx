@@ -87,21 +87,43 @@ export default function App() {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
-    const drawLine = (x1: number, y1: number, x2: number, y2: number, color: string) => {
+    const drawLine = (x1: number, y1: number, x2: number, y2: number, color: string, highlight = false) => {
       ctx.strokeStyle = color;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 8;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
+      if (highlight) {
+        ctx.lineWidth = LINE_WIDTH * 1.5;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 20;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        // second pass for stronger inner glow
+        ctx.shadowBlur = 10;
+        ctx.lineWidth = LINE_WIDTH;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      } else {
+        ctx.lineWidth = LINE_WIDTH;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
       ctx.shadowBlur = 0;
+      ctx.lineWidth = LINE_WIDTH;
     };
+
+    const lm = state.lastMove;
 
     for (let r = 0; r < state.rows; r++) {
       for (let c = 0; c < state.cols - 1; c++) {
         if (state.hLines[r][c] !== 0) {
-          drawLine(getX(c), getY(r), getX(c + 1), getY(r), state.hLines[r][c] === 1 ? colors.p1 : colors.p2);
+          const isLastMove = lm !== null && lm.isH && lm.r === r && lm.c === c;
+          drawLine(getX(c), getY(r), getX(c + 1), getY(r), state.hLines[r][c] === 1 ? colors.p1 : colors.p2, isLastMove);
         }
       }
     }
@@ -109,7 +131,8 @@ export default function App() {
     for (let r = 0; r < state.rows - 1; r++) {
       for (let c = 0; c < state.cols; c++) {
         if (state.vLines[r][c] !== 0) {
-          drawLine(getX(c), getY(r), getX(c), getY(r + 1), state.vLines[r][c] === 1 ? colors.p1 : colors.p2);
+          const isLastMove = lm !== null && !lm.isH && lm.r === r && lm.c === c;
+          drawLine(getX(c), getY(r), getX(c), getY(r + 1), state.vLines[r][c] === 1 ? colors.p1 : colors.p2, isLastMove);
         }
       }
     }

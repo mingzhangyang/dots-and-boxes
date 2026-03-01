@@ -1,5 +1,12 @@
 export type Player = 1 | 2;
 
+export interface LastMove {
+  r: number;
+  c: number;
+  isH: boolean;
+  player: Player;
+}
+
 export interface GameState {
   rows: number;
   cols: number;
@@ -10,6 +17,7 @@ export interface GameState {
   scores: { 1: number; 2: number };
   winner: Player | 0 | 'draw';
   moveCount: number;
+  lastMove: LastMove | null;
 }
 
 export const ROWS = 8;
@@ -25,6 +33,7 @@ export const createInitialState = (): GameState => ({
   scores: { 1: 0, 2: 0 },
   winner: 0,
   moveCount: 0,
+  lastMove: null,
 });
 
 /**
@@ -55,6 +64,7 @@ export const applyMove = (
     boxes: state.boxes.map(row => [...row]),
     scores: { ...state.scores },
     moveCount: state.moveCount + 1,
+    lastMove: { r, c, isH, player: state.currentPlayer },
   };
 
   if (isH) {
