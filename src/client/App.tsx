@@ -9,6 +9,7 @@ import { useRemoteMultiplayer } from './hooks/useRemoteMultiplayer';
 import { ScoreCards } from './components/ScoreCards';
 import { WinOverlay } from './components/WinOverlay';
 import { OnlineLobby } from './components/OnlineLobby';
+import { track } from './analytics';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -284,6 +285,30 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [uiState.currentPlayer, uiState.winner, gameMode, uiState.moveCount, attemptMove]);
+
+  // ---------------------------------------------------------------------------
+  // Play stats: one 'play' on a game's first move, one 'finish' when it ends.
+  // Driven by state rather than input so PvP, PvE and remote are all covered;
+  // moveCount returning to 0 (reset / mode switch / new room) re-arms it.
+  // ---------------------------------------------------------------------------
+
+  const statsRef = useRef({ played: false, finished: false });
+  useEffect(() => {
+    const stats = statsRef.current;
+    if (uiState.moveCount === 0) {
+      stats.played = false;
+      stats.finished = false;
+      return;
+    }
+    if (!stats.played) {
+      stats.played = true;
+      track('play');
+    }
+    if (uiState.winner && !stats.finished) {
+      stats.finished = true;
+      track('finish');
+    }
+  }, [uiState.moveCount, uiState.winner]);
 
   // ---------------------------------------------------------------------------
   // Canvas resize / draw
