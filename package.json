@@ -11,7 +11,8 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit && tsc --project tsconfig.worker.json --noEmit",
     "wrangler:dev": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "test:analytics": "node --test tests/analytics.test.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",

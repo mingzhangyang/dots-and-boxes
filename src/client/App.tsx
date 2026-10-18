@@ -9,7 +9,7 @@ import { useRemoteMultiplayer } from './hooks/useRemoteMultiplayer';
 import { ScoreCards } from './components/ScoreCards';
 import { WinOverlay } from './components/WinOverlay';
 import { OnlineLobby } from './components/OnlineLobby';
-import { track } from './analytics';
+import { initAnalytics, track } from './analytics';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -214,6 +214,13 @@ export default function App() {
     setJoinInput,
     setJoinError,
   } = useRemoteMultiplayer({ gameStateRef, updateGameState });
+
+  // Board actions are playing only between an accepted move and a result.
+  // Waiting/connecting/disconnected online rooms are deliberately excluded.
+  const playingRef = useRef(false);
+  playingRef.current = uiState.moveCount > 0 && !uiState.winner
+    && (gameMode !== 'remote' || remoteStatus === 'ready');
+  useEffect(() => { initAnalytics(() => playingRef.current); }, []);
 
   // ---------------------------------------------------------------------------
   // Mode switching
